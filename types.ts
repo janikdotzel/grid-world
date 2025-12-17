@@ -21,3 +21,5 @@ export enum GameStatus {
 }
 
 export type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
+
+export type GameMode = 'MANUAL' | 'AI';
