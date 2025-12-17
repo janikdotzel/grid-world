@@ -23,3 +23,11 @@ export enum GameStatus {
 export type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
 export type GameMode = 'MANUAL' | 'AI';
+
+export interface AILogEntry {
+  id: number;
+  timestamp: string;
+  direction: Direction;
+  reasoning: string;
+  position: Coordinate;
+}

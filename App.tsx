@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import GridCell from './components/GridCell';
 import Controls from './components/Controls';
 import LevelSelector from './components/LevelSelector';
+import DevConsole from './components/DevConsole';
 import { generateGrid } from './utils/gridGenerator';
-import { Grid, Coordinate, GameStatus, Direction, GameMode } from './types';
+import { Grid, Coordinate, GameStatus, Direction, GameMode, AILogEntry } from './types';
 import { GRID_SIZE } from './constants';
-import { Skull, Trophy, ArrowRight, ChevronDown, Bot, Gamepad2, Play, Pause, Loader2 } from 'lucide-react';
+import { Skull, Trophy, ArrowRight, ChevronDown, Bot, Gamepad2, Play, Pause, Loader2, Terminal } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 
 const App: React.FC = () => {
@@ -27,6 +28,10 @@ const App: React.FC = () => {
   const [isAIActive, setIsAIActive] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [aiThought, setAiThought] = useState<string>("");
+  
+  // Dev State
+  const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
+  const [aiLogs, setAiLogs] = useState<AILogEntry[]>([]);
 
   // Refs for AI loop management
   const aiTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -41,6 +46,7 @@ const App: React.FC = () => {
     setDeaths(0); 
     setIsAIActive(false);
     setAiThought("");
+    setAiLogs([]); // Clear logs on new level
   }, []);
 
   // Initial Load
@@ -182,8 +188,24 @@ const App: React.FC = () => {
       });
 
       const result = JSON.parse(response.text);
-      setAiThought(result.reasoning);
-      movePlayer(result.direction as Direction);
+      const direction = result.direction as Direction;
+      const reasoning = result.reasoning;
+
+      setAiThought(reasoning);
+      
+      // Log the thought
+      setAiLogs(prev => [
+        ...prev, 
+        {
+          id: Date.now(),
+          timestamp: new Date().toLocaleTimeString(),
+          direction,
+          reasoning,
+          position: { ...playerPos }
+        }
+      ]);
+
+      movePlayer(direction);
 
     } catch (error) {
       console.error("AI Error:", error);
@@ -235,7 +257,8 @@ const App: React.FC = () => {
 
   // Render
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 font-sans selection:bg-white selection:text-black">
+    // Main Container: Added padding transition logic for DevConsole
+    <div className={`min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 font-sans selection:bg-white selection:text-black transition-[padding] duration-300 ${isDevToolsOpen ? 'lg:pr-[400px]' : ''}`}>
       
       {/* Background Grid Pattern */}
       <div className="fixed inset-0 z-0 pointer-events-none" 
@@ -246,10 +269,18 @@ const App: React.FC = () => {
            }}
       />
 
+      {/* Dev Console: Rendered outside the relative flow to prevent z-index issues, but kept in the DOM */}
+      <DevConsole 
+        isOpen={isDevToolsOpen}
+        onClose={() => setIsDevToolsOpen(false)}
+        logs={aiLogs}
+        grid={grid}
+      />
+
       <div className="relative z-10 w-full max-w-2xl flex flex-col items-center">
         
         {/* Header */}
-        <header className="w-full flex justify-between items-end mb-8 px-2 max-w-[450px] md:max-w-full">
+        <header className="w-full flex justify-between items-end mb-6 px-2 max-w-[450px] md:max-w-full">
           <div className="flex flex-col gap-3">
              {/* Gradient Text Title */}
             <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-white/80">
@@ -284,19 +315,29 @@ const App: React.FC = () => {
             </div>
           </div>
           
-          <div className="flex items-center gap-6 text-sm">
-            <div className="flex flex-col items-end">
-              <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Current Run</span>
-              <div className="flex items-center gap-2 text-white font-mono">
-                <Skull className="w-3 h-3 text-neutral-400" />
-                <span>{deaths}</span>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-6 text-sm">
+              <div className="flex flex-col items-end">
+                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Current Run</span>
+                <div className="flex items-center gap-2 text-white font-mono">
+                  <Skull className="w-3 h-3 text-neutral-400" />
+                  <span>{deaths}</span>
+                </div>
+              </div>
+              <div className="w-px h-8 bg-neutral-800" />
+              <div className="flex flex-col items-end">
+                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Total</span>
+                 <span className="text-neutral-200 font-mono">{totalDeaths}</span>
               </div>
             </div>
-            <div className="w-px h-8 bg-neutral-800" />
-            <div className="flex flex-col items-end">
-              <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Total</span>
-               <span className="text-neutral-200 font-mono">{totalDeaths}</span>
-            </div>
+            {/* Dev Toggle */}
+            <button 
+              onClick={() => setIsDevToolsOpen(true)}
+              className={`flex items-center gap-1 text-[10px] transition-colors uppercase tracking-widest ${isDevToolsOpen ? 'text-green-400 font-bold' : 'text-neutral-500 hover:text-green-400'}`}
+            >
+              <Terminal className="w-3 h-3" />
+              <span>Dev Console</span>
+            </button>
           </div>
         </header>
 
@@ -335,7 +376,7 @@ const App: React.FC = () => {
 
           {/* Game Over / Win Overlays */}
           
-          {gameStatus === GameStatus.DIED && !isLevelSelectOpen && (
+          {gameStatus === GameStatus.DIED && !isLevelSelectOpen && !isDevToolsOpen && (
             <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center rounded-xl animate-in fade-in duration-300">
               <div className="p-8 bg-black border border-white/20 rounded-2xl flex flex-col items-center shadow-2xl max-w-[80%] text-center">
                 <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mb-4 border border-red-500/30">
@@ -358,7 +399,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {gameStatus === GameStatus.WON && !isLevelSelectOpen && (
+          {gameStatus === GameStatus.WON && !isLevelSelectOpen && !isDevToolsOpen && (
             <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center rounded-xl animate-in fade-in duration-300">
                <div className="p-8 bg-black border border-white/20 rounded-2xl flex flex-col items-center shadow-2xl max-w-[80%] text-center">
                 <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center mb-4 border border-white/30">
@@ -383,15 +424,15 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Controls / AI Status */}
-        <div className="w-full flex justify-center h-32">
+        {/* Controls / AI Status - Removed fixed height to prevent overlapping */}
+        <div className="w-full flex justify-center mt-6 min-h-[140px] items-start">
           {gameMode === 'MANUAL' ? (
              <Controls 
                onMove={movePlayer} 
                disabled={gameStatus !== GameStatus.PLAYING} 
              />
           ) : (
-            <div className="mt-6 flex flex-col items-center w-full max-w-[450px]">
+            <div className="flex flex-col items-center w-full max-w-[450px]">
               <div className="flex items-center gap-4 mb-4">
                 <button
                   onClick={() => setIsAIActive(!isAIActive)}
@@ -432,8 +473,8 @@ const App: React.FC = () => {
           )}
         </div>
 
-         {/* Footer */}
-        <div className="mt-4 text-center">
+         {/* Footer - Increased top margin to ensure no overlap */}
+        <div className="mt-8 mb-4 text-center">
            <p className="text-xs text-neutral-500 font-medium tracking-widest">
              {gameMode === 'AI' ? 'GEMINI API ACTIVE' : 'MANUAL OVERRIDE ENGAGED'}
            </p>
