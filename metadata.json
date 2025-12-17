@@ -1,0 +1,5 @@
+{
+  "name": "Grid World Survival",
+  "description": "A tactical grid traversal game where you must memorize hidden traps. Navigate from start to end, learning from your mistakes as the environment persists between attempts.",
+  "requestFramePermissions": []
+}

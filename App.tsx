@@ -1,0 +1,290 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import GridCell from './components/GridCell';
+import Controls from './components/Controls';
+import LevelSelector from './components/LevelSelector';
+import { generateGrid } from './utils/gridGenerator';
+import { Grid, Coordinate, GameStatus, Direction } from './types';
+import { GRID_SIZE } from './constants';
+import { Skull, Trophy, ArrowRight, ChevronDown } from 'lucide-react';
+
+const App: React.FC = () => {
+  // Game State
+  const [grid, setGrid] = useState<Grid>([]);
+  const [playerPos, setPlayerPos] = useState<Coordinate>({ x: 0, y: 0 });
+  const [startPos, setStartPos] = useState<Coordinate>({ x: 0, y: 0 });
+  const [gameStatus, setGameStatus] = useState<GameStatus>(GameStatus.PLAYING);
+  
+  // Progression State
+  const [level, setLevel] = useState(1);
+  const [maxReachedLevel, setMaxReachedLevel] = useState(1);
+  const [deaths, setDeaths] = useState(0);
+  const [totalDeaths, setTotalDeaths] = useState(0);
+  
+  // UI State
+  const [isLevelSelectOpen, setIsLevelSelectOpen] = useState(false);
+
+  // Initialize Level
+  const initLevel = useCallback(() => {
+    const { grid: newGrid, start, end } = generateGrid();
+    setGrid(newGrid);
+    setStartPos(start);
+    setPlayerPos(start);
+    setGameStatus(GameStatus.PLAYING);
+    setDeaths(0); 
+  }, []);
+
+  // Initial Load
+  useEffect(() => {
+    initLevel();
+  }, [initLevel]);
+
+  // Movement Logic
+  const movePlayer = useCallback((direction: Direction) => {
+    if (gameStatus !== GameStatus.PLAYING) return;
+
+    setPlayerPos((prev) => {
+      let next = { ...prev };
+      switch (direction) {
+        case 'UP': next.y -= 1; break;
+        case 'DOWN': next.y += 1; break;
+        case 'LEFT': next.x -= 1; break;
+        case 'RIGHT': next.x += 1; break;
+      }
+
+      // 1. Boundary Check
+      if (next.x < 0 || next.x >= GRID_SIZE || next.y < 0 || next.y >= GRID_SIZE) {
+        return prev;
+      }
+
+      const targetCell = grid[next.y][next.x];
+
+      // 2. Wall Check
+      if (targetCell.type === 'WALL') {
+        return prev; // Bump into wall
+      }
+
+      // 3. Trap Check
+      if (targetCell.type === 'TRAP') {
+        // Reveal trap logic
+        const newGrid = [...grid];
+        newGrid[next.y][next.x] = { ...targetCell, isRevealed: true };
+        setGrid(newGrid);
+        setGameStatus(GameStatus.DIED);
+        setDeaths(d => d + 1);
+        setTotalDeaths(d => d + 1);
+        return next; // Move onto the trap (and die)
+      }
+
+      // 4. End Check
+      if (targetCell.type === 'END') {
+        setGameStatus(GameStatus.WON);
+        return next;
+      }
+
+      // 5. Normal Move
+      return next;
+    });
+  }, [grid, gameStatus]);
+
+  // Restart after death (keep map)
+  const handleTryAgain = useCallback(() => {
+    setPlayerPos(startPos);
+    setGameStatus(GameStatus.PLAYING);
+  }, [startPos]);
+
+  // Next Level (new map)
+  const handleNextLevel = useCallback(() => {
+    const nextLevel = level + 1;
+    setLevel(nextLevel);
+    if (nextLevel > maxReachedLevel) {
+      setMaxReachedLevel(nextLevel);
+    }
+    initLevel();
+  }, [level, maxReachedLevel, initLevel]);
+
+  // Select specific level
+  const handleSelectLevel = useCallback((lvl: number) => {
+    setLevel(lvl);
+    setIsLevelSelectOpen(false);
+    initLevel();
+  }, [initLevel]);
+
+  // Keyboard Listeners
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Movement controls
+      if (gameStatus === GameStatus.PLAYING) {
+        switch (e.key) {
+          case 'ArrowUp': case 'w': case 'W': movePlayer('UP'); break;
+          case 'ArrowDown': case 's': case 'S': movePlayer('DOWN'); break;
+          case 'ArrowLeft': case 'a': case 'A': movePlayer('LEFT'); break;
+          case 'ArrowRight': case 'd': case 'D': movePlayer('RIGHT'); break;
+        }
+      }
+
+      // Game state controls
+      if (e.key === 'Enter') {
+        if (gameStatus === GameStatus.DIED) {
+          handleTryAgain();
+        } else if (gameStatus === GameStatus.WON) {
+          handleNextLevel();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [movePlayer, gameStatus, handleTryAgain, handleNextLevel]);
+
+  // Render
+  return (
+    <div className="min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 font-sans selection:bg-white selection:text-black">
+      
+      {/* Background Grid Pattern - Lightened lines */}
+      <div className="fixed inset-0 z-0 pointer-events-none" 
+           style={{
+             backgroundImage: 'radial-gradient(circle at 1px 1px, #333 1px, transparent 0)',
+             backgroundSize: '40px 40px',
+             opacity: 0.6
+           }}
+      />
+
+      <div className="relative z-10 w-full max-w-2xl flex flex-col items-center">
+        
+        {/* Header */}
+        <header className="w-full flex justify-between items-end mb-8 px-2 max-w-[450px] md:max-w-full">
+          <div className="flex flex-col gap-1">
+             {/* Gradient Text Title */}
+            <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-white/80">
+              Grid World
+            </h1>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setIsLevelSelectOpen(true)}
+                className="group flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-white/10 text-white/90 border border-white/10 hover:bg-white/20 hover:border-white/30 transition-all cursor-pointer"
+              >
+                Sector {level}
+                <ChevronDown className="w-3 h-3 opacity-50 group-hover:opacity-100 transition-opacity" />
+              </button>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-6 text-sm">
+            <div className="flex flex-col items-end">
+              <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Current Run</span>
+              <div className="flex items-center gap-2 text-white font-mono">
+                <Skull className="w-3 h-3 text-neutral-400" />
+                <span>{deaths}</span>
+              </div>
+            </div>
+            <div className="w-px h-8 bg-neutral-800" />
+            <div className="flex flex-col items-end">
+              <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Total</span>
+               <span className="text-neutral-200 font-mono">{totalDeaths}</span>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Game Card */}
+        <div className="relative p-1 rounded-2xl bg-neutral-900/40 ring-1 ring-white/20 shadow-2xl backdrop-blur-sm">
+          
+          {/* Level Selector Overlay */}
+          {isLevelSelectOpen && (
+            <LevelSelector 
+              currentLevel={level}
+              maxReachedLevel={maxReachedLevel}
+              onSelectLevel={handleSelectLevel}
+              onClose={() => setIsLevelSelectOpen(false)}
+            />
+          )}
+
+          {/* The Grid */}
+          <div 
+            className="grid gap-px bg-neutral-800 border border-neutral-800 rounded-xl overflow-hidden"
+            style={{ 
+              gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+              width: 'min(85vw, 450px)',
+              height: 'min(85vw, 450px)'
+            }}
+          >
+            {grid.map((row, y) => (
+              row.map((cell, x) => (
+                <GridCell 
+                  key={`${x}-${y}`} 
+                  cell={cell} 
+                  isPlayerHere={playerPos.x === x && playerPos.y === y}
+                />
+              ))
+            ))}
+          </div>
+
+          {/* Game Over / Win Overlays */}
+          
+          {gameStatus === GameStatus.DIED && !isLevelSelectOpen && (
+            <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center rounded-xl animate-in fade-in duration-300">
+              <div className="p-8 bg-black border border-white/20 rounded-2xl flex flex-col items-center shadow-2xl max-w-[80%] text-center">
+                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center mb-4 border border-red-500/30">
+                    <Skull className="w-6 h-6 text-red-500" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Terminated</h2>
+                <p className="text-neutral-300 text-sm mb-6">
+                  Trap detected. <br/> Memory persistence active.
+                </p>
+                <button 
+                  onClick={handleTryAgain}
+                  className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
+                >
+                  Try Again
+                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">
+                    ↵
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {gameStatus === GameStatus.WON && !isLevelSelectOpen && (
+            <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center rounded-xl animate-in fade-in duration-300">
+               <div className="p-8 bg-black border border-white/20 rounded-2xl flex flex-col items-center shadow-2xl max-w-[80%] text-center">
+                <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center mb-4 border border-white/30">
+                    <Trophy className="w-6 h-6 text-white" />
+                </div>
+                <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Complete</h2>
+                <p className="text-neutral-300 text-sm mb-6">
+                  Sector cleared. Proceed to next level.
+                </p>
+                <button 
+                  onClick={handleNextLevel}
+                  className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
+                >
+                  Next Level
+                  <ArrowRight className="w-4 h-4" />
+                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">
+                    ↵
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Controls */}
+        <div className="w-full flex justify-center">
+             <Controls 
+            onMove={movePlayer} 
+            disabled={gameStatus !== GameStatus.PLAYING} 
+            />
+        </div>
+
+         {/* Footer */}
+        <div className="mt-12 text-center">
+           <p className="text-xs text-neutral-500 font-medium tracking-widest">
+             DESIGNED FOR SURVIVAL
+           </p>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default App;
