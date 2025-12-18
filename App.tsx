@@ -77,43 +77,42 @@ const App: React.FC = () => {
   const movePlayer = useCallback((direction: Direction) => {
     if (gameStatus !== GameStatus.PLAYING) return;
 
-    setPlayerPos((prev) => {
-      let next = { ...prev };
-      switch (direction) {
-        case 'UP': next.y -= 1; break;
-        case 'DOWN': next.y += 1; break;
-        case 'LEFT': next.x -= 1; break;
-        case 'RIGHT': next.x += 1; break;
-      }
+    // Use current state to determine if movement is valid
+    // We avoid doing side-effects inside setPlayerPos callback to prevent double-counting in Strict Mode
+    let next = { ...playerPos };
+    switch (direction) {
+      case 'UP': next.y -= 1; break;
+      case 'DOWN': next.y += 1; break;
+      case 'LEFT': next.x -= 1; break;
+      case 'RIGHT': next.x += 1; break;
+    }
 
-      if (next.x < 0 || next.x >= GRID_SIZE || next.y < 0 || next.y >= GRID_SIZE) return prev;
+    // 1. Boundary Check
+    if (next.x < 0 || next.x >= GRID_SIZE || next.y < 0 || next.y >= GRID_SIZE) return;
 
-      const targetCell = grid[next.y][next.x];
-      if (targetCell.type === 'WALL') return prev;
+    // 2. Wall Check
+    const targetCell = grid[next.y][next.x];
+    if (targetCell.type === 'WALL') return;
 
-      setSteps(s => s + 1);
-      setTotalSteps(ts => ts + 1);
+    // 3. Valid move confirmed - Execute state updates
+    setSteps(s => s + 1);
+    setTotalSteps(ts => ts + 1);
+    setPlayerPos(next);
 
-      if (targetCell.type === 'TRAP') {
-        const newGrid = [...grid];
-        newGrid[next.y][next.x] = { ...targetCell, isRevealed: true };
-        setGrid(newGrid);
-        setGameStatus(GameStatus.DIED);
-        setDeaths(d => d + 1);
-        setTotalDeaths(d => d + 1);
-        setIsAIActive(false);
-        return next;
-      }
-
-      if (targetCell.type === 'END') {
-        setGameStatus(GameStatus.WON);
-        setIsAIActive(false);
-        return next;
-      }
-
-      return next;
-    });
-  }, [grid, gameStatus]);
+    // 4. Trap/End Resolution
+    if (targetCell.type === 'TRAP') {
+      const newGrid = [...grid];
+      newGrid[next.y][next.x] = { ...targetCell, isRevealed: true };
+      setGrid(newGrid);
+      setGameStatus(GameStatus.DIED);
+      setDeaths(d => d + 1);
+      setTotalDeaths(d => d + 1);
+      setIsAIActive(false);
+    } else if (targetCell.type === 'END') {
+      setGameStatus(GameStatus.WON);
+      setIsAIActive(false);
+    }
+  }, [grid, gameStatus, playerPos]);
 
   const handleTryAgain = useCallback(() => {
     setPlayerPos(startPos);
