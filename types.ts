@@ -24,10 +24,13 @@ export type Direction = 'UP' | 'DOWN' | 'LEFT' | 'RIGHT';
 
 export type GameMode = 'MANUAL' | 'AI';
 
+export type AIAgentType = 'GEMINI' | 'EXTERNAL';
+
 export interface AILogEntry {
   id: number;
   timestamp: string;
   direction: Direction;
   reasoning: string;
   position: Coordinate;
+  agent: AIAgentType;
 }

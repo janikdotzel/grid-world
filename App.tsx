@@ -4,9 +4,9 @@ import Controls from './components/Controls';
 import LevelSelector from './components/LevelSelector';
 import DevConsole from './components/DevConsole';
 import { generateGrid } from './utils/gridGenerator';
-import { Grid, Coordinate, GameStatus, Direction, GameMode, AILogEntry } from './types';
+import { Grid, Coordinate, GameStatus, Direction, GameMode, AILogEntry, AIAgentType } from './types';
 import { GRID_SIZE } from './constants';
-import { Skull, Trophy, ArrowRight, ChevronDown, Bot, Gamepad2, Play, Pause, Loader2, Terminal } from 'lucide-react';
+import { Skull, Trophy, ArrowRight, ChevronDown, Bot, Gamepad2, Play, Pause, Loader2, Terminal, Cpu, Move } from 'lucide-react';
 import { GoogleGenAI, Type } from "@google/genai";
 
 const App: React.FC = () => {
@@ -21,6 +21,8 @@ const App: React.FC = () => {
   const [maxReachedLevel, setMaxReachedLevel] = useState(1);
   const [deaths, setDeaths] = useState(0);
   const [totalDeaths, setTotalDeaths] = useState(0);
+  const [steps, setSteps] = useState(0);
+  const [totalSteps, setTotalSteps] = useState(0);
   
   // UI State
   const [isLevelSelectOpen, setIsLevelSelectOpen] = useState(false);
@@ -29,12 +31,29 @@ const App: React.FC = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [aiThought, setAiThought] = useState<string>("");
   
+  // AI Settings
+  const [agentType, setAgentType] = useState<AIAgentType>(() => {
+    return (localStorage.getItem('grid-world-agent-type') as AIAgentType) || 'GEMINI';
+  });
+  const [externalUrl, setExternalUrl] = useState(() => {
+    return localStorage.getItem('grid-world-external-url') || '';
+  });
+
   // Dev State
   const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
   const [aiLogs, setAiLogs] = useState<AILogEntry[]>([]);
 
   // Refs for AI loop management
   const aiTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Persist settings
+  useEffect(() => {
+    localStorage.setItem('grid-world-agent-type', agentType);
+  }, [agentType]);
+
+  useEffect(() => {
+    localStorage.setItem('grid-world-external-url', externalUrl);
+  }, [externalUrl]);
 
   // Initialize Level
   const initLevel = useCallback(() => {
@@ -44,6 +63,7 @@ const App: React.FC = () => {
     setPlayerPos(start);
     setGameStatus(GameStatus.PLAYING);
     setDeaths(0); 
+    setSteps(0);
     setIsAIActive(false);
     setAiThought("");
     setAiLogs([]); // Clear logs on new level
@@ -79,40 +99,41 @@ const App: React.FC = () => {
         return prev; // Bump into wall
       }
 
+      // Valid move detected
+      setSteps(s => s + 1);
+      setTotalSteps(ts => ts + 1);
+
       // 3. Trap Check
       if (targetCell.type === 'TRAP') {
-        // Reveal trap logic
         const newGrid = [...grid];
         newGrid[next.y][next.x] = { ...targetCell, isRevealed: true };
         setGrid(newGrid);
         setGameStatus(GameStatus.DIED);
         setDeaths(d => d + 1);
         setTotalDeaths(d => d + 1);
-        setIsAIActive(false); // Stop AI on death
-        return next; // Move onto the trap (and die)
+        setIsAIActive(false);
+        return next;
       }
 
       // 4. End Check
       if (targetCell.type === 'END') {
         setGameStatus(GameStatus.WON);
-        setIsAIActive(false); // Stop AI on win
+        setIsAIActive(false);
         return next;
       }
 
-      // 5. Normal Move
       return next;
     });
   }, [grid, gameStatus]);
 
-  // Restart after death (keep map)
   const handleTryAgain = useCallback(() => {
     setPlayerPos(startPos);
     setGameStatus(GameStatus.PLAYING);
+    setSteps(0); // Reset steps for the specific attempt
     setIsAIActive(false);
     setAiThought("");
   }, [startPos]);
 
-  // Next Level (new map)
   const handleNextLevel = useCallback(() => {
     const nextLevel = level + 1;
     setLevel(nextLevel);
@@ -122,7 +143,6 @@ const App: React.FC = () => {
     initLevel();
   }, [level, maxReachedLevel, initLevel]);
 
-  // Select specific level
   const handleSelectLevel = useCallback((lvl: number) => {
     setLevel(lvl);
     setIsLevelSelectOpen(false);
@@ -132,17 +152,9 @@ const App: React.FC = () => {
   // --- AI Logic ---
 
   const fetchAIMove = async () => {
-    if (!process.env.API_KEY) {
-      setAiThought("Error: No API Key found.");
-      setIsAIActive(false);
-      return;
-    }
-
     setIsThinking(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      
-      // Locate static obstacles and dynamic hazards
+      // Common data for both agents
       const walls: Coordinate[] = [];
       const knownTraps: Coordinate[] = [];
       let target: Coordinate = { x: 0, y: 0 };
@@ -172,54 +184,73 @@ const App: React.FC = () => {
         Return a JSON object with the "direction" (UP, DOWN, LEFT, RIGHT) and a short "reasoning".
       `;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              direction: { type: Type.STRING, enum: ['UP', 'DOWN', 'LEFT', 'RIGHT'] },
-              reasoning: { type: Type.STRING }
+      let direction: Direction;
+      let reasoning: string;
+
+      if (agentType === 'GEMINI') {
+        if (!process.env.API_KEY) {
+          throw new Error("No API Key found.");
+        }
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                direction: { type: Type.STRING, enum: ['UP', 'DOWN', 'LEFT', 'RIGHT'] },
+                reasoning: { type: Type.STRING }
+              }
             }
           }
+        });
+        const result = JSON.parse(response.text);
+        direction = result.direction as Direction;
+        reasoning = result.reasoning;
+      } else {
+        // EXTERNAL AGENT
+        if (!externalUrl) {
+          throw new Error("External Agent URL not configured.");
         }
-      });
-
-      const result = JSON.parse(response.text);
-      const direction = result.direction as Direction;
-      const reasoning = result.reasoning;
+        const response = await fetch(externalUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt })
+        });
+        if (!response.ok) throw new Error(`External Agent responded with ${response.status}`);
+        const result = await response.json();
+        direction = result.direction as Direction;
+        reasoning = result.reasoning;
+      }
 
       setAiThought(reasoning);
-      
-      // Log the thought
       setAiLogs(prev => [
         ...prev, 
         {
           id: Date.now(),
-          timestamp: new Date().toLocaleTimeString(),
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           direction,
           reasoning,
-          position: { ...playerPos }
+          position: { ...playerPos },
+          agent: agentType
         }
       ]);
 
       movePlayer(direction);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("AI Error:", error);
-      setAiThought("Connection error. Stopping.");
+      setAiThought(`Error: ${error.message}`);
       setIsAIActive(false);
     } finally {
       setIsThinking(false);
     }
   };
 
-  // AI Loop
   useEffect(() => {
     if (isAIActive && gameStatus === GameStatus.PLAYING && !isThinking) {
-      // Add a small delay for visual pacing
       aiTimeoutRef.current = setTimeout(() => {
         fetchAIMove();
       }, 600);
@@ -227,10 +258,8 @@ const App: React.FC = () => {
     return () => {
       if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current);
     };
-  }, [isAIActive, gameStatus, isThinking, playerPos]); // Re-run when player moves
+  }, [isAIActive, gameStatus, isThinking, playerPos]);
 
-
-  // Keyboard Listeners (Only in Manual Mode)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (gameMode === 'MANUAL' && gameStatus === GameStatus.PLAYING) {
@@ -241,26 +270,18 @@ const App: React.FC = () => {
           case 'ArrowRight': case 'd': case 'D': movePlayer('RIGHT'); break;
         }
       }
-
-      // Game state controls
       if (e.key === 'Enter') {
-        if (gameStatus === GameStatus.DIED) {
-          handleTryAgain();
-        } else if (gameStatus === GameStatus.WON) {
-          handleNextLevel();
-        }
+        if (gameStatus === GameStatus.DIED) handleTryAgain();
+        else if (gameStatus === GameStatus.WON) handleNextLevel();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [movePlayer, gameStatus, handleTryAgain, handleNextLevel, gameMode]);
 
-  // Render
   return (
-    // Main Container: Added padding transition logic for DevConsole
     <div className={`min-h-screen bg-black text-white flex flex-col items-center justify-center p-6 font-sans selection:bg-white selection:text-black transition-[padding] duration-300 ${isDevToolsOpen ? 'lg:pr-[400px]' : ''}`}>
       
-      {/* Background Grid Pattern */}
       <div className="fixed inset-0 z-0 pointer-events-none" 
            style={{
              backgroundImage: 'radial-gradient(circle at 1px 1px, #333 1px, transparent 0)',
@@ -269,20 +290,21 @@ const App: React.FC = () => {
            }}
       />
 
-      {/* Dev Console: Rendered outside the relative flow to prevent z-index issues, but kept in the DOM */}
       <DevConsole 
         isOpen={isDevToolsOpen}
         onClose={() => setIsDevToolsOpen(false)}
         logs={aiLogs}
         grid={grid}
+        agentType={agentType}
+        setAgentType={setAgentType}
+        externalUrl={externalUrl}
+        setExternalUrl={setExternalUrl}
       />
 
       <div className="relative z-10 w-full max-w-2xl flex flex-col items-center">
         
-        {/* Header */}
         <header className="w-full flex justify-between items-end mb-6 px-2 max-w-[450px] md:max-w-full">
           <div className="flex flex-col gap-3">
-             {/* Gradient Text Title */}
             <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-white/80">
               Grid World
             </h1>
@@ -295,7 +317,6 @@ const App: React.FC = () => {
                 <ChevronDown className="w-3 h-3 opacity-50 group-hover:opacity-100 transition-opacity" />
               </button>
 
-              {/* Mode Toggle */}
               <div className="flex bg-neutral-900 rounded-lg p-0.5 border border-neutral-800">
                 <button
                   onClick={() => { setGameMode('MANUAL'); setIsAIActive(false); }}
@@ -309,7 +330,7 @@ const App: React.FC = () => {
                   className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-[10px] font-bold tracking-wider uppercase transition-all ${gameMode === 'AI' ? 'bg-white text-black shadow-sm' : 'text-neutral-500 hover:text-white'}`}
                 >
                   <Bot className="w-3 h-3" />
-                  API Mode
+                  Agent
                 </button>
               </div>
             </div>
@@ -318,19 +339,27 @@ const App: React.FC = () => {
           <div className="flex flex-col items-end gap-2">
             <div className="flex items-center gap-6 text-sm">
               <div className="flex flex-col items-end">
-                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Current Run</span>
-                <div className="flex items-center gap-2 text-white font-mono">
-                  <Skull className="w-3 h-3 text-neutral-400" />
-                  <span>{deaths}</span>
+                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Attempt</span>
+                <div className="flex items-center gap-4 text-white font-mono">
+                  <div className="flex items-center gap-1">
+                    <Skull className="w-3 h-3 text-neutral-400" />
+                    <span>{deaths}</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Move className="w-3 h-3 text-neutral-400" />
+                    <span>{steps}</span>
+                  </div>
                 </div>
               </div>
               <div className="w-px h-8 bg-neutral-800" />
               <div className="flex flex-col items-end">
                 <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Total</span>
-                 <span className="text-neutral-200 font-mono">{totalDeaths}</span>
+                 <div className="flex flex-col items-end">
+                    <span className="text-neutral-200 font-mono text-[11px] leading-tight">D: {totalDeaths}</span>
+                    <span className="text-neutral-200 font-mono text-[11px] leading-tight">S: {totalSteps}</span>
+                 </div>
               </div>
             </div>
-            {/* Dev Toggle */}
             <button 
               onClick={() => setIsDevToolsOpen(true)}
               className={`flex items-center gap-1 text-[10px] transition-colors uppercase tracking-widest ${isDevToolsOpen ? 'text-green-400 font-bold' : 'text-neutral-500 hover:text-green-400'}`}
@@ -341,10 +370,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        {/* Main Game Card */}
         <div className="relative p-1 rounded-2xl bg-neutral-900/40 ring-1 ring-white/20 shadow-2xl backdrop-blur-sm">
-          
-          {/* Level Selector Overlay */}
           {isLevelSelectOpen && (
             <LevelSelector 
               currentLevel={level}
@@ -354,7 +380,6 @@ const App: React.FC = () => {
             />
           )}
 
-          {/* The Grid */}
           <div 
             className="grid gap-px bg-neutral-800 border border-neutral-800 rounded-xl overflow-hidden"
             style={{ 
@@ -373,8 +398,6 @@ const App: React.FC = () => {
               ))
             ))}
           </div>
-
-          {/* Game Over / Win Overlays */}
           
           {gameStatus === GameStatus.DIED && !isLevelSelectOpen && !isDevToolsOpen && (
             <div className="absolute inset-0 z-20 bg-black/70 backdrop-blur-md flex flex-col items-center justify-center rounded-xl animate-in fade-in duration-300">
@@ -383,17 +406,13 @@ const App: React.FC = () => {
                     <Skull className="w-6 h-6 text-red-500" />
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Terminated</h2>
-                <p className="text-neutral-300 text-sm mb-6">
-                  Trap detected. <br/> Memory persistence active.
-                </p>
+                <p className="text-neutral-300 text-sm mb-6">Trap detected. Memory persistence active.</p>
                 <button 
                   onClick={handleTryAgain}
                   className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
                 >
                   Try Again
-                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">
-                    ↵
-                  </span>
+                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
                 </button>
               </div>
             </div>
@@ -406,26 +425,21 @@ const App: React.FC = () => {
                     <Trophy className="w-6 h-6 text-white" />
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Complete</h2>
-                <p className="text-neutral-300 text-sm mb-6">
-                  Sector cleared. Proceed to next level.
-                </p>
+                <p className="text-neutral-300 text-sm mb-6">Sector cleared. Proceed to next level.</p>
                 <button 
                   onClick={handleNextLevel}
                   className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
                 >
                   Next Level
                   <ArrowRight className="w-4 h-4" />
-                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">
-                    ↵
-                  </span>
+                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        {/* Controls / AI Status - Removed fixed height to prevent overlapping */}
-        <div className="w-full flex justify-center mt-6 min-h-[140px] items-start">
+        <div className="w-full flex justify-center mt-6 min-h-[160px] items-start">
           {gameMode === 'MANUAL' ? (
              <Controls 
                onMove={movePlayer} 
@@ -433,38 +447,35 @@ const App: React.FC = () => {
              />
           ) : (
             <div className="flex flex-col items-center w-full max-w-[450px]">
-              <div className="flex items-center gap-4 mb-4">
+              <div className="flex items-center gap-3 mb-4">
                 <button
                   onClick={() => setIsAIActive(!isAIActive)}
                   disabled={gameStatus !== GameStatus.PLAYING}
                   className={`
-                    flex items-center gap-2 px-6 py-3 rounded-full font-bold transition-all
+                    flex items-center gap-2 px-6 py-2.5 rounded-full font-bold transition-all
                     ${isAIActive 
                       ? 'bg-neutral-800 text-white border border-neutral-700 hover:bg-neutral-700' 
                       : 'bg-white text-black hover:bg-neutral-200'}
                     disabled:opacity-50 disabled:cursor-not-allowed
                   `}
                 >
-                  {isAIActive ? (
-                    <>
-                      <Pause className="w-4 h-4 fill-current" /> Pause Autopilot
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4 fill-current" /> Start Autopilot
-                    </>
-                  )}
+                  {isAIActive ? <><Pause className="w-4 h-4 fill-current" /> Pause AI</> : <><Play className="w-4 h-4 fill-current" /> Start AI</>}
                 </button>
+                
+                {/* Visual indicator of agent type */}
+                <div className={`px-3 py-2 rounded-full border text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 ${agentType === 'GEMINI' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'}`}>
+                   {agentType === 'GEMINI' ? <Bot className="w-3 h-3" /> : <Cpu className="w-3 h-3" />}
+                   {agentType}
+                </div>
               </div>
               
-              {/* AI Thought Process Log */}
               <div className="w-full bg-neutral-900/50 border border-white/5 rounded-lg p-3 text-xs font-mono min-h-[60px] flex items-center justify-center text-center text-neutral-400">
                 {isThinking ? (
                   <span className="flex items-center gap-2 text-white animate-pulse">
-                    <Loader2 className="w-3 h-3 animate-spin" /> Analyzing grid topology...
+                    <Loader2 className="w-3 h-3 animate-spin" /> {agentType === 'GEMINI' ? 'Gemini thinking...' : 'External agent thinking...'}
                   </span>
                 ) : aiThought ? (
-                  <span className="text-emerald-400">"{aiThought}"</span>
+                  <span className={aiThought.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'}>"{aiThought}"</span>
                 ) : (
                   "Ready to initiate navigation sequence."
                 )}
@@ -473,10 +484,9 @@ const App: React.FC = () => {
           )}
         </div>
 
-         {/* Footer - Increased top margin to ensure no overlap */}
-        <div className="mt-8 mb-4 text-center">
-           <p className="text-xs text-neutral-500 font-medium tracking-widest">
-             {gameMode === 'AI' ? 'GEMINI API ACTIVE' : 'MANUAL OVERRIDE ENGAGED'}
+        <div className="mt-4 mb-4 text-center">
+           <p className="text-[10px] text-neutral-600 font-medium tracking-widest uppercase">
+             {gameMode === 'AI' ? `${agentType} AGENT ACTIVE` : 'MANUAL OVERRIDE ENGAGED'}
            </p>
         </div>
 
