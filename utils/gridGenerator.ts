@@ -1,6 +1,17 @@
 import { Cell, CellType, Coordinate, Grid } from '../types';
 import { GRID_SIZE, WALL_DENSITY, TRAP_DENSITY } from '../constants';
 
+// Simple seeded random number generator (Mulberry32)
+// This ensures Level 1 is always the same "random" layout, etc.
+const createSeededRandom = (seed: number) => {
+  return () => {
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+};
+
 // BFS to check if a path exists
 const hasPath = (grid: Grid, start: Coordinate, end: Coordinate, treatTrapsAsWalls: boolean): boolean => {
   const queue: Coordinate[] = [start];
@@ -21,8 +32,6 @@ const hasPath = (grid: Grid, start: Coordinate, end: Coordinate, treatTrapsAsWal
         const key = `${nx},${ny}`;
         if (!visited.has(key)) {
           const cell = grid[ny][nx];
-          // If treating traps as walls, we can't pass through them.
-          // Otherwise, we only block on actual walls.
           const isBlocked = cell.type === 'WALL' || (treatTrapsAsWalls && cell.type === 'TRAP');
           
           if (!isBlocked) {
@@ -36,7 +45,9 @@ const hasPath = (grid: Grid, start: Coordinate, end: Coordinate, treatTrapsAsWal
   return false;
 };
 
-export const generateGrid = (): { grid: Grid; start: Coordinate; end: Coordinate } => {
+export const generateGrid = (level: number): { grid: Grid; start: Coordinate; end: Coordinate } => {
+  // We use the level number as a seed so the map is consistent for that level every time.
+  const rand = createSeededRandom(level * 12345);
   let attempts = 0;
   
   while (attempts < 1000) {
@@ -52,22 +63,19 @@ export const generateGrid = (): { grid: Grid; start: Coordinate; end: Coordinate
       }))
     );
 
-    // 2. Place Start and End
-    // Ensure they aren't the same and ideally somewhat far apart (optional, but better UX)
-    const start: Coordinate = { x: 0, y: 0 }; 
-    const end: Coordinate = { x: GRID_SIZE - 1, y: GRID_SIZE - 1 };
-
-    // Randomize slightly if desired, but corners are classic. 
-    // Let's stick to random positions for variety as per "Grid World" roguelike feel.
-    const randomPos = () => ({
-      x: Math.floor(Math.random() * GRID_SIZE),
-      y: Math.floor(Math.random() * GRID_SIZE),
-    });
-
-    let s = randomPos();
-    let e = randomPos();
+    // 2. Place Start and End deterministically for the seed
+    const s: Coordinate = {
+      x: Math.floor(rand() * 4), // Keep start in top-left quadrant
+      y: Math.floor(rand() * 4),
+    };
+    let e: Coordinate = {
+      x: Math.floor(GRID_SIZE - 1 - rand() * 4), // Keep end in bottom-right quadrant
+      y: Math.floor(GRID_SIZE - 1 - rand() * 4),
+    };
+    
     while (s.x === e.x && s.y === e.y) {
-      e = randomPos();
+      e.x = Math.floor(rand() * GRID_SIZE);
+      e.y = Math.floor(rand() * GRID_SIZE);
     }
     
     grid[s.y][s.x].type = 'START';
@@ -76,35 +84,30 @@ export const generateGrid = (): { grid: Grid; start: Coordinate; end: Coordinate
     // 3. Place Walls
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
-        if (grid[y][x].type === 'EMPTY' && Math.random() < WALL_DENSITY) {
+        if (grid[y][x].type === 'EMPTY' && rand() < WALL_DENSITY) {
           grid[y][x].type = 'WALL';
         }
       }
     }
 
     // 4. Check connectivity (ignoring traps first)
-    // If we can't even walk without traps, the wall layout is bad.
     if (!hasPath(grid, s, e, false)) continue;
 
     // 5. Place Traps
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
-        if (grid[y][x].type === 'EMPTY' && Math.random() < TRAP_DENSITY) {
+        if (grid[y][x].type === 'EMPTY' && rand() < TRAP_DENSITY) {
           grid[y][x].type = 'TRAP';
         }
       }
     }
 
     // 6. Final Solvability Check
-    // We want to ensure there is at least ONE path that is completely safe.
-    // The prompt says "learn and avoid", which implies there IS a way to avoid.
     if (hasPath(grid, s, e, true)) {
       return { grid, start: s, end: e };
     }
-    
-    // If not solvable, the loop continues and regenerates
   }
 
-  // Fallback (should effectively never happen with decent density values)
-  return generateGrid();
+  // Final fallback (failsafe)
+  return generateGrid(level + 1);
 };

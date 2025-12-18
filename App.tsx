@@ -18,7 +18,6 @@ const App: React.FC = () => {
   
   // Progression State
   const [level, setLevel] = useState(1);
-  const [maxReachedLevel, setMaxReachedLevel] = useState(1);
   const [deaths, setDeaths] = useState(0);
   const [totalDeaths, setTotalDeaths] = useState(0);
   const [steps, setSteps] = useState(0);
@@ -56,8 +55,8 @@ const App: React.FC = () => {
   }, [externalUrl]);
 
   // Initialize Level
-  const initLevel = useCallback(() => {
-    const { grid: newGrid, start, end } = generateGrid();
+  const initLevel = useCallback((levelToLoad: number) => {
+    const { grid: newGrid, start } = generateGrid(levelToLoad);
     setGrid(newGrid);
     setStartPos(start);
     setPlayerPos(start);
@@ -66,13 +65,13 @@ const App: React.FC = () => {
     setSteps(0);
     setIsAIActive(false);
     setAiThought("");
-    setAiLogs([]); // Clear logs on new level
+    setAiLogs([]);
   }, []);
 
   // Initial Load
   useEffect(() => {
-    initLevel();
-  }, [initLevel]);
+    initLevel(level);
+  }, [initLevel, level]);
 
   // Movement Logic
   const movePlayer = useCallback((direction: Direction) => {
@@ -87,23 +86,14 @@ const App: React.FC = () => {
         case 'RIGHT': next.x += 1; break;
       }
 
-      // 1. Boundary Check
-      if (next.x < 0 || next.x >= GRID_SIZE || next.y < 0 || next.y >= GRID_SIZE) {
-        return prev;
-      }
+      if (next.x < 0 || next.x >= GRID_SIZE || next.y < 0 || next.y >= GRID_SIZE) return prev;
 
       const targetCell = grid[next.y][next.x];
+      if (targetCell.type === 'WALL') return prev;
 
-      // 2. Wall Check
-      if (targetCell.type === 'WALL') {
-        return prev; // Bump into wall
-      }
-
-      // Valid move detected
       setSteps(s => s + 1);
       setTotalSteps(ts => ts + 1);
 
-      // 3. Trap Check
       if (targetCell.type === 'TRAP') {
         const newGrid = [...grid];
         newGrid[next.y][next.x] = { ...targetCell, isRevealed: true };
@@ -115,7 +105,6 @@ const App: React.FC = () => {
         return next;
       }
 
-      // 4. End Check
       if (targetCell.type === 'END') {
         setGameStatus(GameStatus.WON);
         setIsAIActive(false);
@@ -129,32 +118,25 @@ const App: React.FC = () => {
   const handleTryAgain = useCallback(() => {
     setPlayerPos(startPos);
     setGameStatus(GameStatus.PLAYING);
-    setSteps(0); // Reset steps for the specific attempt
+    setSteps(0);
     setIsAIActive(false);
     setAiThought("");
   }, [startPos]);
 
   const handleNextLevel = useCallback(() => {
-    const nextLevel = level + 1;
+    const nextLevel = (level % 10) + 1;
     setLevel(nextLevel);
-    if (nextLevel > maxReachedLevel) {
-      setMaxReachedLevel(nextLevel);
-    }
-    initLevel();
-  }, [level, maxReachedLevel, initLevel]);
+  }, [level]);
 
   const handleSelectLevel = useCallback((lvl: number) => {
     setLevel(lvl);
     setIsLevelSelectOpen(false);
-    initLevel();
-  }, [initLevel]);
+  }, []);
 
   // --- AI Logic ---
-
   const fetchAIMove = async () => {
     setIsThinking(true);
     try {
-      // Common data for both agents
       const walls: Coordinate[] = [];
       const knownTraps: Coordinate[] = [];
       let target: Coordinate = { x: 0, y: 0 };
@@ -168,32 +150,19 @@ const App: React.FC = () => {
       });
 
       const prompt = `
-        You are an AI playing a Grid World game.
-        Grid Size: ${GRID_SIZE}x${GRID_SIZE}.
-        Current Position: {x: ${playerPos.x}, y: ${playerPos.y}}.
-        Target Position: {x: ${target.x}, y: ${target.y}}.
-        Walls (Impassable): ${JSON.stringify(walls)}.
-        Known Traps (Fatal): ${JSON.stringify(knownTraps)}.
-        
-        Task: Provide the next single move to get closer to the Target.
-        Rules:
-        1. Do not move into a Wall.
-        2. Do not move into a Known Trap.
-        3. Do not move out of bounds (0-9).
-        
-        Return a JSON object with the "direction" (UP, DOWN, LEFT, RIGHT) and a short "reasoning".
+        AI in Grid World. Position: (${playerPos.x},${playerPos.y}), Target: (${target.x},${target.y}).
+        Grid: 10x10. Walls: ${JSON.stringify(walls)}. Revealed Traps: ${JSON.stringify(knownTraps)}.
+        Rule: Must avoid walls and traps. Return JSON: {"direction": "UP"|"DOWN"|"LEFT"|"RIGHT", "reasoning": "short string"}
       `;
 
       let direction: Direction;
       let reasoning: string;
 
       if (agentType === 'GEMINI') {
-        if (!process.env.API_KEY) {
-          throw new Error("No API Key found.");
-        }
+        if (!process.env.API_KEY) throw new Error("No API Key");
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
+          model: 'gemini-3-flash-preview',
           contents: prompt,
           config: {
             responseMimeType: "application/json",
@@ -210,16 +179,13 @@ const App: React.FC = () => {
         direction = result.direction as Direction;
         reasoning = result.reasoning;
       } else {
-        // EXTERNAL AGENT
-        if (!externalUrl) {
-          throw new Error("External Agent URL not configured.");
-        }
+        if (!externalUrl) throw new Error("URL not set");
         const response = await fetch(externalUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt })
         });
-        if (!response.ok) throw new Error(`External Agent responded with ${response.status}`);
+        if (!response.ok) throw new Error(`Status ${response.status}`);
         const result = await response.json();
         direction = result.direction as Direction;
         reasoning = result.reasoning;
@@ -237,11 +203,9 @@ const App: React.FC = () => {
           agent: agentType
         }
       ]);
-
       movePlayer(direction);
-
     } catch (error: any) {
-      console.error("AI Error:", error);
+      console.error(error);
       setAiThought(`Error: ${error.message}`);
       setIsAIActive(false);
     } finally {
@@ -251,13 +215,9 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (isAIActive && gameStatus === GameStatus.PLAYING && !isThinking) {
-      aiTimeoutRef.current = setTimeout(() => {
-        fetchAIMove();
-      }, 600);
+      aiTimeoutRef.current = setTimeout(() => fetchAIMove(), 600);
     }
-    return () => {
-      if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current);
-    };
+    return () => { if (aiTimeoutRef.current) clearTimeout(aiTimeoutRef.current); };
   }, [isAIActive, gameStatus, isThinking, playerPos]);
 
   useEffect(() => {
@@ -303,15 +263,15 @@ const App: React.FC = () => {
 
       <div className="relative z-10 w-full max-w-2xl flex flex-col items-center">
         
-        <header className="w-full flex justify-between items-end mb-6 px-2 max-w-[450px] md:max-w-full">
-          <div className="flex flex-col gap-3">
+        <header className="w-full flex justify-between items-end mb-8 px-2 max-w-[450px] md:max-w-full">
+          <div className="flex flex-col gap-4">
             <h1 className="text-4xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white to-white/80">
               Grid World
             </h1>
             <div className="flex items-center gap-3">
               <button 
                 onClick={() => setIsLevelSelectOpen(true)}
-                className="group flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase bg-white/10 text-white/90 border border-white/10 hover:bg-white/20 hover:border-white/30 transition-all cursor-pointer"
+                className="group flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-bold tracking-wider uppercase bg-white/10 text-white/90 border border-white/10 hover:bg-white/20 hover:border-white/30 transition-all cursor-pointer"
               >
                 Sector {level}
                 <ChevronDown className="w-3 h-3 opacity-50 group-hover:opacity-100 transition-opacity" />
@@ -336,45 +296,50 @@ const App: React.FC = () => {
             </div>
           </div>
           
-          <div className="flex flex-col items-end gap-2">
+          <div className="flex flex-col items-end gap-3">
             <div className="flex items-center gap-6 text-sm">
-              <div className="flex flex-col items-end">
-                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Attempt</span>
+              <div className="flex flex-col items-end gap-1">
+                <span className="text-[10px] text-neutral-500 uppercase tracking-widest font-semibold">Attempt</span>
                 <div className="flex items-center gap-4 text-white font-mono">
-                  <div className="flex items-center gap-1">
-                    <Skull className="w-3 h-3 text-neutral-400" />
+                  <div className="flex items-center gap-1.5">
+                    <Skull className="w-3 h-3 text-red-500/60" />
                     <span>{deaths}</span>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <Move className="w-3 h-3 text-neutral-400" />
+                  <div className="flex items-center gap-1.5">
+                    <Move className="w-3 h-3 text-blue-500/60" />
                     <span>{steps}</span>
                   </div>
                 </div>
               </div>
-              <div className="w-px h-8 bg-neutral-800" />
-              <div className="flex flex-col items-end">
-                <span className="text-[10px] text-neutral-400 uppercase tracking-widest font-semibold">Total</span>
+              <div className="w-px h-10 bg-neutral-800" />
+              <div className="flex flex-col items-end gap-1">
+                <span className="text-[10px] text-neutral-500 uppercase tracking-widest font-semibold">Session</span>
                  <div className="flex flex-col items-end">
-                    <span className="text-neutral-200 font-mono text-[11px] leading-tight">D: {totalDeaths}</span>
-                    <span className="text-neutral-200 font-mono text-[11px] leading-tight">S: {totalSteps}</span>
+                    <div className="flex items-center gap-1.5 text-neutral-300 font-mono text-[11px] leading-tight">
+                      <Skull className="w-2.5 h-2.5 text-neutral-600" />
+                      <span>{totalDeaths}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-neutral-300 font-mono text-[11px] leading-tight">
+                      <Move className="w-2.5 h-2.5 text-neutral-600" />
+                      <span>{totalSteps}</span>
+                    </div>
                  </div>
               </div>
             </div>
             <button 
               onClick={() => setIsDevToolsOpen(true)}
-              className={`flex items-center gap-1 text-[10px] transition-colors uppercase tracking-widest ${isDevToolsOpen ? 'text-green-400 font-bold' : 'text-neutral-500 hover:text-green-400'}`}
+              className={`flex items-center gap-1.5 text-[10px] transition-colors uppercase tracking-widest ${isDevToolsOpen ? 'text-green-400 font-bold' : 'text-neutral-500 hover:text-green-400'}`}
             >
-              <Terminal className="w-3 h-3" />
+              <Terminal className="w-3.5 h-3.5" />
               <span>Dev Console</span>
             </button>
           </div>
         </header>
 
-        <div className="relative p-1 rounded-2xl bg-neutral-900/40 ring-1 ring-white/20 shadow-2xl backdrop-blur-sm">
+        <div className="relative p-1 rounded-2xl bg-neutral-900/40 ring-1 ring-white/10 shadow-2xl backdrop-blur-sm">
           {isLevelSelectOpen && (
             <LevelSelector 
               currentLevel={level}
-              maxReachedLevel={maxReachedLevel}
               onSelectLevel={handleSelectLevel}
               onClose={() => setIsLevelSelectOpen(false)}
             />
@@ -384,8 +349,8 @@ const App: React.FC = () => {
             className="grid gap-px bg-neutral-800 border border-neutral-800 rounded-xl overflow-hidden"
             style={{ 
               gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
-              width: 'min(85vw, 450px)',
-              height: 'min(85vw, 450px)'
+              width: 'min(88vw, 450px)',
+              height: 'min(88vw, 450px)'
             }}
           >
             {grid.map((row, y) => (
@@ -406,13 +371,13 @@ const App: React.FC = () => {
                     <Skull className="w-6 h-6 text-red-500" />
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Terminated</h2>
-                <p className="text-neutral-300 text-sm mb-6">Trap detected. Memory persistence active.</p>
+                <p className="text-neutral-400 text-sm mb-6">Trap detected. Memory persistence active.</p>
                 <button 
                   onClick={handleTryAgain}
                   className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
                 >
                   Try Again
-                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
+                  <span className="opacity-40 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
                 </button>
               </div>
             </div>
@@ -425,21 +390,21 @@ const App: React.FC = () => {
                     <Trophy className="w-6 h-6 text-white" />
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">Complete</h2>
-                <p className="text-neutral-300 text-sm mb-6">Sector cleared. Proceed to next level.</p>
+                <p className="text-neutral-400 text-sm mb-6">Sector cleared. Proceed to next sector.</p>
                 <button 
                   onClick={handleNextLevel}
                   className="group relative px-6 py-2.5 bg-white text-black text-sm font-semibold rounded-full hover:bg-neutral-200 transition-colors flex items-center gap-2"
                 >
-                  Next Level
+                  Next Sector
                   <ArrowRight className="w-4 h-4" />
-                  <span className="opacity-50 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
+                  <span className="opacity-40 text-[10px] px-1.5 py-0.5 border border-black/20 rounded ml-1 group-hover:border-black/40">↵</span>
                 </button>
               </div>
             </div>
           )}
         </div>
 
-        <div className="w-full flex justify-center mt-6 min-h-[160px] items-start">
+        <div className="w-full flex justify-center mt-8 min-h-[170px] items-start">
           {gameMode === 'MANUAL' ? (
              <Controls 
                onMove={movePlayer} 
@@ -447,48 +412,47 @@ const App: React.FC = () => {
              />
           ) : (
             <div className="flex flex-col items-center w-full max-w-[450px]">
-              <div className="flex items-center gap-3 mb-4">
+              <div className="flex items-center gap-4 mb-5">
                 <button
                   onClick={() => setIsAIActive(!isAIActive)}
                   disabled={gameStatus !== GameStatus.PLAYING}
                   className={`
-                    flex items-center gap-2 px-6 py-2.5 rounded-full font-bold transition-all
+                    flex items-center gap-2 px-6 py-2.5 rounded-full font-bold transition-all shadow-lg
                     ${isAIActive 
                       ? 'bg-neutral-800 text-white border border-neutral-700 hover:bg-neutral-700' 
                       : 'bg-white text-black hover:bg-neutral-200'}
                     disabled:opacity-50 disabled:cursor-not-allowed
                   `}
                 >
-                  {isAIActive ? <><Pause className="w-4 h-4 fill-current" /> Pause AI</> : <><Play className="w-4 h-4 fill-current" /> Start AI</>}
+                  {isAIActive ? <><Pause className="w-4 h-4 fill-current" /> Stop AI</> : <><Play className="w-4 h-4 fill-current" /> Launch AI</>}
                 </button>
                 
-                {/* Visual indicator of agent type */}
-                <div className={`px-3 py-2 rounded-full border text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 ${agentType === 'GEMINI' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'}`}>
-                   {agentType === 'GEMINI' ? <Bot className="w-3 h-3" /> : <Cpu className="w-3 h-3" />}
+                <div className={`px-4 py-2 rounded-full border text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 ${agentType === 'GEMINI' ? 'bg-blue-500/10 border-blue-500/30 text-blue-400' : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'}`}>
+                   {agentType === 'GEMINI' ? <Bot className="w-3.5 h-3.5" /> : <Cpu className="w-3.5 h-3.5" />}
                    {agentType}
                 </div>
               </div>
               
-              <div className="w-full bg-neutral-900/50 border border-white/5 rounded-lg p-3 text-xs font-mono min-h-[60px] flex items-center justify-center text-center text-neutral-400">
+              <div className="w-full bg-neutral-900/60 border border-white/5 rounded-xl p-4 text-xs font-mono min-h-[70px] flex items-center justify-center text-center text-neutral-500 leading-relaxed">
                 {isThinking ? (
                   <span className="flex items-center gap-2 text-white animate-pulse">
-                    <Loader2 className="w-3 h-3 animate-spin" /> {agentType === 'GEMINI' ? 'Gemini thinking...' : 'External agent thinking...'}
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" /> {agentType === 'GEMINI' ? 'Processing grid coordinates...' : 'External server thinking...'}
                   </span>
                 ) : aiThought ? (
                   <span className={aiThought.startsWith('Error') ? 'text-red-400' : 'text-emerald-400'}>"{aiThought}"</span>
                 ) : (
-                  "Ready to initiate navigation sequence."
+                  "Ready for autonomous navigation."
                 )}
               </div>
             </div>
           )}
         </div>
 
-        <div className="mt-4 mb-4 text-center">
-           <p className="text-[10px] text-neutral-600 font-medium tracking-widest uppercase">
-             {gameMode === 'AI' ? `${agentType} AGENT ACTIVE` : 'MANUAL OVERRIDE ENGAGED'}
+        <footer className="mt-8 mb-4 text-center">
+           <p className="text-[10px] text-neutral-700 font-bold tracking-[0.2em] uppercase">
+             {gameMode === 'AI' ? `${agentType} API ACTIVE` : 'MANUAL OVERRIDE ENGAGED'}
            </p>
-        </div>
+        </footer>
 
       </div>
     </div>
